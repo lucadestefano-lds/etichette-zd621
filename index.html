@@ -255,6 +255,10 @@
         <label class="lbl">Indirizzo IP stampante</label>
         <input type="text" id="printerIp" placeholder="Es. 192.168.1.50" inputmode="decimal">
       </div>
+      <label class="autoheight-toggle" id="bleShowAllRow" style="margin-top:10px; padding-top:10px;">
+        <input type="checkbox" id="bleShowAll">
+        <span>Mostra tutti i dispositivi Bluetooth (diagnostica)</span>
+      </label>
     </div>
   </section>
 
@@ -399,6 +403,7 @@
   const autoHeightChk = $('autoHeight');
   const exportBtn = $('exportBtn'), importBtn = $('importBtn'), importFile = $('importFile');
   const modeBleBtn = $('modeBleBtn'), modeWifiBtn = $('modeWifiBtn'), wifiIpRow = $('wifiIpRow'), printerIpInp = $('printerIp');
+  const bleShowAllRow = $('bleShowAllRow'), bleShowAllChk = $('bleShowAll');
   const subEl = document.querySelector('.brand .sub');
 
   function log(msg, cls){
@@ -676,6 +681,7 @@
     modeBleBtn.classList.toggle('active', state.connMode === 'ble');
     modeWifiBtn.classList.toggle('active', state.connMode === 'wifi');
     wifiIpRow.style.display = state.connMode === 'wifi' ? 'block' : 'none';
+    bleShowAllRow.style.display = state.connMode === 'ble' ? 'flex' : 'none';
     subEl.textContent = state.connMode === 'ble' ? 'ZD621 · BLE' : 'ZD621 · WiFi';
   }
   applyModeUI();
@@ -759,23 +765,32 @@
       setStatus('err', 'Non supportato');
       return;
     }
+    const showAll = bleShowAllChk.checked;
     try{
-      log('Ricerca stampante nelle vicinanze…');
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [
-          { services: [SERVICE_UUID_SHORT] },
-          { namePrefix: 'ZD621' },
-          { namePrefix: 'Zebra' }
-        ],
-        optionalServices: [SERVICE_UUID_FULL, SERVICE_UUID_SHORT]
-      });
+      log(showAll ? 'Ricerca — mostro tutti i dispositivi nelle vicinanze…' : 'Ricerca stampante nelle vicinanze…');
+      const requestOpts = showAll
+        ? { acceptAllDevices: true, optionalServices: [SERVICE_UUID_FULL, SERVICE_UUID_SHORT] }
+        : {
+            filters: [
+              { services: [SERVICE_UUID_SHORT] },
+              { namePrefix: 'ZD621' },
+              { namePrefix: 'Zebra' }
+            ],
+            optionalServices: [SERVICE_UUID_FULL, SERVICE_UUID_SHORT]
+          };
+      const device = await navigator.bluetooth.requestDevice(requestOpts);
       state.device = device;
-      log(`Selezionata: ${device.name || 'dispositivo senza nome'}`);
+      log(`Selezionata: ${device.name || 'dispositivo senza nome'} (${device.id})`);
       device.addEventListener('gattserverdisconnected', onDisconnected);
 
       setStatus(null, 'Connessione…');
       const server = await device.gatt.connect();
-      const service = await server.getPrimaryService(SERVICE_UUID_FULL);
+      let service;
+      try{
+        service = await server.getPrimaryService(SERVICE_UUID_FULL);
+      } catch(svcErr){
+        throw new Error(`connesso a "${device.name || 'dispositivo'}" ma non espone il servizio della stampante — probabilmente non è la ZD621`);
+      }
       const characteristic = await service.getCharacteristic(WRITE_CHAR_UUID);
       state.char = characteristic;
 
