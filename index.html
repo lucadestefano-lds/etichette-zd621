@@ -173,6 +173,7 @@
     cursor:pointer; text-align:center;
   }
   .btn:hover{border-color: var(--amber-dim); color: var(--amber);}
+  .btn.active{border-style:solid; border-color: var(--amber); color: var(--amber); background: var(--amber-dim);}
 
   details{border:1px solid var(--line); border-radius: var(--radius); overflow:hidden;}
   summary{
@@ -242,6 +243,20 @@
 </div>
 
 <main>
+
+  <section>
+    <h2>Connessione</h2>
+    <div class="card">
+      <div class="add-row" style="margin-top:0;">
+        <button class="btn" id="modeBleBtn">Bluetooth</button>
+        <button class="btn" id="modeWifiBtn">WiFi (IP)</button>
+      </div>
+      <div class="field" id="wifiIpRow" style="display:none; margin:10px 0 0;">
+        <label class="lbl">Indirizzo IP stampante</label>
+        <input type="text" id="printerIp" placeholder="Es. 192.168.1.50" inputmode="decimal">
+      </div>
+    </div>
+  </section>
 
   <section>
     <h2>Anteprima</h2>
@@ -383,6 +398,8 @@
   const copiesInp = $('copies');
   const autoHeightChk = $('autoHeight');
   const exportBtn = $('exportBtn'), importBtn = $('importBtn'), importFile = $('importFile');
+  const modeBleBtn = $('modeBleBtn'), modeWifiBtn = $('modeWifiBtn'), wifiIpRow = $('wifiIpRow'), printerIpInp = $('printerIp');
+  const subEl = document.querySelector('.brand .sub');
 
   function log(msg, cls){
     const d = document.createElement('div');
@@ -649,6 +666,55 @@
 
   copiesInp.addEventListener('input', () => { zplOut.textContent = generateZPL(); });
 
+  // ---------- connection mode (Bluetooth / WiFi) ----------
+  state.connMode = localStorage.getItem('connMode') === 'wifi' ? 'wifi' : 'ble';
+  state.printerIp = localStorage.getItem('printerIp') || '';
+  state.wifiConnected = false;
+  printerIpInp.value = state.printerIp;
+
+  function applyModeUI(){
+    modeBleBtn.classList.toggle('active', state.connMode === 'ble');
+    modeWifiBtn.classList.toggle('active', state.connMode === 'wifi');
+    wifiIpRow.style.display = state.connMode === 'wifi' ? 'block' : 'none';
+    subEl.textContent = state.connMode === 'ble' ? 'ZD621 · BLE' : 'ZD621 · WiFi';
+  }
+  applyModeUI();
+
+  function setMode(mode){
+    if(state.connMode === mode) return;
+    if(state.device && state.device.gatt && state.device.gatt.connected) state.device.gatt.disconnect();
+    state.connMode = mode;
+    localStorage.setItem('connMode', mode);
+    applyModeUI();
+    onDisconnected();
+  }
+  modeBleBtn.addEventListener('click', () => setMode('ble'));
+  modeWifiBtn.addEventListener('click', () => setMode('wifi'));
+  printerIpInp.addEventListener('input', () => {
+    state.printerIp = printerIpInp.value.trim();
+    localStorage.setItem('printerIp', state.printerIp);
+  });
+
+  function friendlyWifiError(err){
+    const base = err && err.message ? err.message : String(err);
+    if(/Failed to fetch|NetworkError|Load failed/i.test(base)){
+      return base + ' — probabile blocco "contenuto misto": questa pagina è HTTPS e la stampante è HTTP sulla rete locale. Chrome blocca la richiesta per sicurezza.';
+    }
+    return base;
+  }
+
+  async function sendZPLWifi(zpl){
+    const ip = state.printerIp;
+    if(!ip) throw new Error('Indirizzo IP mancante.');
+    await fetch(`http://${ip}/pstprnt`, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body: zpl,
+      signal: AbortSignal.timeout(6000)
+    });
+  }
+
   // ---------- Web Bluetooth ----------
   const SERVICE_UUID_FULL = '38eb4a80-c570-11e3-9507-0002a5d5c51b';
   const WRITE_CHAR_UUID = '38eb4a82-c570-11e3-9507-0002a5d5c51b';
@@ -660,6 +726,30 @@
   }
 
   connectBtn.addEventListener('click', async () => {
+    if(state.connMode === 'wifi'){
+      if(state.wifiConnected){
+        state.wifiConnected = false;
+        onDisconnected();
+        return;
+      }
+      const ip = state.printerIp;
+      if(!ip){ log('Inserisci l\'indirizzo IP della stampante.', 'e'); return; }
+      setStatus(null, 'Verifica…');
+      try{
+        // richiesta "no-cors": non possiamo leggere l'esito, solo se la rete è raggiungibile
+        await fetch(`http://${ip}/`, { mode: 'no-cors', signal: AbortSignal.timeout(4000) });
+        state.wifiConnected = true;
+        setStatus('on', ip);
+        connectBtn.textContent = 'Disconnetti';
+        printBtn.disabled = false;
+        log(`Stampante raggiungibile su ${ip} (verifica di rete limitata dal browser).`, 'o');
+      } catch(err){
+        log('Stampante non raggiungibile: ' + friendlyWifiError(err), 'e');
+        setStatus('err', 'Non raggiungibile');
+      }
+      return;
+    }
+
     if(state.device && state.device.gatt.connected){
       state.device.gatt.disconnect();
       return;
@@ -704,19 +794,28 @@
     connectBtn.textContent = 'Collega';
     printBtn.disabled = true;
     state.char = null;
-    log('Stampante disconnessa.');
+    state.wifiConnected = false;
+    log('Disconnesso.');
   }
 
   printBtn.addEventListener('click', async () => {
-    if(!state.char){ log('Nessuna stampante connessa.', 'e'); return; }
+    if(state.connMode === 'wifi' ? !state.wifiConnected : !state.char){
+      log('Nessuna stampante connessa.', 'e');
+      return;
+    }
     const zpl = generateZPL();
     try{
       printBtn.disabled = true;
       printBtn.querySelector('span').textContent = 'Invio…';
-      await sendZPL(zpl);
+      if(state.connMode === 'wifi'){
+        await sendZPLWifi(zpl);
+      } else {
+        await sendZPL(zpl);
+      }
       log('Etichetta inviata alla stampante.', 'o');
     } catch(err){
-      log('Errore durante la stampa: ' + err.message, 'e');
+      const msg = state.connMode === 'wifi' ? friendlyWifiError(err) : err.message;
+      log('Errore durante la stampa: ' + msg, 'e');
     } finally{
       printBtn.disabled = false;
       printBtn.querySelector('span').textContent = 'Stampa';
