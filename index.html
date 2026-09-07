@@ -837,6 +837,8 @@
     }
   });
 
+  function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
   async function sendZPL(zpl){
     const bytes = new TextEncoder().encode(zpl);
     const CHUNK = 180; // stay well under the 512-byte link-layer limit
@@ -845,10 +847,15 @@
       const chunk = bytes.slice(i, i+CHUNK);
       if(useWithoutResponse){
         await state.char.writeValueWithoutResponse(chunk);
+        await sleep(15); // dà tempo al buffer di ricezione della stampante di svuotarsi
       } else {
         await state.char.writeValue(chunk);
       }
     }
+    // margine perché la stampante finisca di elaborare l'ultimo pacchetto (^XZ incluso)
+    // prima che l'app o l'utente disconnettano — un invio troncato lascia un comando
+    // ZPL aperto e la stampante "in attesa", il che può confondere altri software finché non si riavvia
+    await sleep(400);
   }
 
   // ---------- import / export modello ----------
